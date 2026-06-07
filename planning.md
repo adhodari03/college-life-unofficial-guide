@@ -11,7 +11,7 @@
 
 <!-- What domain did you choose? Why is this knowledge valuable and hard to find through official channels? -->
 
----
+I chose UCLA as my university, and gathered 10 documents to explore off campus life, parking situations, college food and student life at UCLA through unofficial sources.  
 
 ## Documents
 
@@ -20,16 +20,16 @@
 
 | # | Source | Description | URL or location |
 |---|--------|-------------|-----------------|
-| 1 | | | |
-| 2 | | | |
-| 3 | | | |
-| 4 | | | |
-| 5 | | | |
-| 6 | | | |
-| 7 | | | |
-| 8 | | | |
-| 9 | | | |
-| 10 | | | |
+| 1 | r/ucla - Off Campus Apartments | Reddit thread where UCLA students discuss finding and living in off-campus apartments in Westwood | https://www.reddit.com/r/ucla/comments/1b16h81/off_campus_apartments/ |
+| 2 | r/ucla - Parking Discussion | Reddit thread where students discuss parking experiences and tips near UCLA | https://www.reddit.com/r/ucla/comments/1q49rn6/parking/ |
+| 3 | r/ucla Wiki - Parking | UCLA subreddit wiki page with community-compiled parking information and guidance | https://www.reddit.com/r/ucla/wiki/parking/ |
+| 4 | r/ucla - Parking Permits Walkthrough | Reddit thread where students ask for and share step-by-step guidance on obtaining UCLA parking permits | https://www.reddit.com/r/ucla/comments/1mhrjit/please_walk_me_through_parking_permits/ |
+| 5 | Daily Bruin Stack - Campus Living | Daily Bruin data journalism piece analyzing UCLA campus living costs, options, and student trends | https://stack.dailybruin.com/2022/11/30/campus-living/ |
+| 6 | Daily Bruin - Westwood Apartment Hunting | Daily Bruin article covering the competitive and fast-moving Westwood off-campus rental market | https://dailybruin.com/2026/03/07/high-demand-fast-pace-inside-the-westwood-apartment-hunting-process |
+| 7 | Bruin Commuters | Official UCLA resource hub for commuter students covering transportation, parking, and off-campus life | https://bruincommuters.ucla.edu/ |
+| 8 | UCLA Housing - Ask Housing | Official UCLA Housing knowledge base and FAQ portal for student housing questions | https://ask.housing.ucla.edu/ |
+| 9 | UCLA Transportation - Student Parking | Official UCLA Transportation page detailing student parking permit options, lots, and policies | https://transportation.ucla.edu/campus-parking/students |
+| 10 | r/ucla - Unofficial Guide to UCLA (2018) | Comprehensive community-written Reddit guide covering many aspects of UCLA student life including housing and commuting | https://www.reddit.com/r/ucla/comments/9itxyf/the_redditors_unofficial_guide_to_ucla_2018/ |
 
 ---
 
@@ -41,11 +41,11 @@
      A review-heavy corpus warrants different chunking than a long FAQ. -->
 
 **Chunk size:**
-
+600 characters (ceiling, not average) most short Reddit comments end up as single sub-600 chunks because the splitter never crosses segment boundaries
 **Overlap:**
-
+80 characters, snapped to word boundary, only applied between chunks split from the same segment
 **Reasoning:**
-
+Since most of the documents are reddit discussions, and some of them are 9 paragraphs long and some just short one-liners, implementing a chunking strategy with fixed-size chunks will not be suitable. That is why using segment boundaries ensure every chunk holds a meaning, and the overlap of 80 does not create coherence damage.
 ---
 
 ## Retrieval Approach
@@ -57,11 +57,11 @@
      support, accuracy on domain-specific text, latency? -->
 
 **Embedding model:**
-
+Using all-MiniLM-L6-v2. Saw it's use in Hugging Face as well, and seems to fit our needs of semantic search. 
 **Top-k:**
-
+5 — ~2,500 chars of context, enough to surface multiple Reddit perspectives without diluting precision.
 **Production tradeoff reflection:**
-
+if cost weren't a constraint, I'd consider BAAI/bge-base-en-v1.5 for higher retrieval accuracy and add a cross-encoder re-rank stage. For 364 chunks and 5 eval questions, the MiniLM baseline is the right call — the cost of a worse embedding model is more visible than the cost of a worse k.
 ---
 
 ## Evaluation Plan
@@ -73,12 +73,11 @@
 
 | # | Question | Expected answer |
 |---|----------|-----------------|
-| 1 | | |
-| 2 | | |
-| 3 | | |
-| 4 | | |
-| 5 | | |
-
+| 1 | What is the daily parking rate at the closest public lot to UCLA's main campus? | A specific dollar amount (e.g. "$3/hour" or "$15/day") cited from the parking document — not a guess |
+| 2 | Which off-campus neighborhoods are listed as recommended places for UCLA students to live? | A named list of neighborhoods (e.g. Westwood, Palms, Mar Vista) drawn from the housing document |
+| 3 | What is the contact information for the UCLA off-campus housing office? | A specific phone number, address, or URL from the document — fail if hallucinated |
+| 4 | Do any documents mention student discounts on monthly parking permits? | Either the exact discount detail from the doc, OR "the documents do not mention this" — fail if the system guesses |
+| 5 | What is the average monthly rent for a 1-bedroom apartment near UCLA? | "The provided documents do not contain this information" — fail if the system invents a number |
 ---
 
 ## Anticipated Challenges
@@ -87,9 +86,9 @@
      Consider: noisy or inconsistent documents, missing source attribution, off-topic
      retrieval, chunks that split key information across boundaries. -->
 
-1.
+1. Documents and texts may not be parsed well enough to extract information. Some questions may be considered out of scope. 
 
-2.
+2. Source of document could be hallucinated response and may not actually come from the document itself. Being able to actually source will be great.
 
 ---
 
@@ -103,6 +102,46 @@
 
 ---
 
+┌──────────────────────────────────────────────────────────────────────┐
+│                  THE UNOFFICIAL GUIDE — RAG PIPELINE                 │
+└──────────────────────────────────────────────────────────────────────┘
+
+   [1] DOCUMENT INGESTION
+       documents/*.pdf  ──►  preprocess.py  ──►  processed/corpus.jsonl
+       (10 PDFs: Reddit threads, Daily Bruin, BruinLife, UCLA wiki)
+       tool: pdfplumber + per-source cleaners (Reddit / article)
+       output: 276 clean text segments with metadata
+                                  │
+                                  ▼
+   [2] CHUNKING
+       processed/corpus.jsonl  ──►  chunk.py  ──►  chunks/chunks.jsonl
+       recursive splitter on ["\n\n", "\n", ". ", " "]
+       600-char ceiling • 80-char overlap • segment boundaries hard
+       output: 364 chunks, each with [source — author] prefix
+                                  │
+                                  ▼
+   [3] EMBEDDING + VECTOR STORE
+       chunks/chunks.jsonl  ──►  embed.py  ──►  chroma/  (local DB)
+       model: sentence-transformers/all-MiniLM-L6-v2  (384-dim)
+       store: ChromaDB, cosine similarity
+       output: 364 vectors + metadata, persisted on disk
+                                  │
+                                  ▼
+   [4] RETRIEVAL
+       user query  ──►  embed query  ──►  ChromaDB top-k=5
+                                              │
+                                  returns 5 chunks + sources
+                                              │
+                                              ▼
+   [5] GENERATION
+       query + 5 retrieved chunks  ──►  Groq LLM  ──►  grounded answer
+       system prompt: "answer only from provided context, cite sources"
+       interface: Gradio or Streamlit (milestone 5)
+                                              │
+                                              ▼
+                                       answer + citations
+
+
 ## AI Tool Plan
 
 <!-- For each part of the pipeline below, describe:
@@ -114,6 +153,8 @@
      "I'll use AI to help me code" is not a plan.
      "I'll give Claude my Chunking Strategy section and ask it to implement chunk_text()
      with my specified chunk size and overlap" is a plan. -->
+I will give Claude my strategy for chunking and ask it to evaluate, the implement the strategy. 
+Preprocessing documents to .json format will be done with the help of Claude Code as well. I will review the fuctions used, and the logic behind every step.
 
 **Milestone 3 — Ingestion and chunking:**
 
