@@ -46,6 +46,17 @@ def classify(filename: str) -> str:
 
 PAGE_FOOTER_RE = re.compile(r"^\d+\s+of\s+\d+\s+\d+/\d+/\d+,\s*\d+:\d+\s*[AP]M$")
 URL_RE = re.compile(r"https?://\S+")
+# Reddit's per-page sidebar header that pdfplumber inserts mid-text.
+# Matches both standalone lines and the embedded form ("1 r/ucla Search in r/ucla Create").
+REDDIT_SIDEBAR_RE = re.compile(
+    r"\d*\s*r/ucla\s+Search\s+in\s+r/ucla\s+Create\s*\d*"
+)
+# Footer / copyright lines that occasionally survive the column filter.
+COPYRIGHT_RE = re.compile(r"(copyright|©|all rights reserved)", re.IGNORECASE)
+SITE_FOOTER_TOKENS = (
+    "Develop/write for us", "Apply to the Stack", "Contact us",
+    "About Us", "Contact Us", "UCLA STUDENT MEDIA", "Daily Bruin",
+)
 
 
 def extract_raw(path: Path) -> str:
@@ -57,8 +68,16 @@ def extract_raw(path: Path) -> str:
 
 
 def strip_generic_noise(text: str) -> List[str]:
-    """Drop page footers and URL-only header lines; keep blank lines as
-    paragraph separators."""
+    """Drop page footers, URL header lines, and Reddit sidebar headers.
+
+    The Reddit sidebar pattern ("r/ucla Search in r/ucla Create") gets injected
+    by pdfplumber at the top of every page; without removal it ends up
+    mid-comment when comment text wraps across a page boundary.
+    """
+    # First, strip the sidebar pattern wherever it occurs in the text (handles
+    # both standalone lines and within-line occurrences from page joins).
+    text = REDDIT_SIDEBAR_RE.sub(" ", text)
+
     out: List[str] = []
     for raw in text.split("\n"):
         line = raw.rstrip()
@@ -67,7 +86,7 @@ def strip_generic_noise(text: str) -> List[str]:
             continue
         if PAGE_FOOTER_RE.match(line.strip()):
             continue
-        # Reddit/Bruin/BruinLife per-page URL header line
+        # Per-page URL header from Reddit / Daily Bruin / BruinLife
         if URL_RE.search(line) and ("reddit.com" in line or "dailybruin.com" in line
                                     or "bruinlife.com" in line):
             continue
@@ -120,7 +139,11 @@ def parse_reddit(lines: List[str], title_fallback: str) -> Dict:
         i += 1
         return val
 
-    op_author = next_nonblank()
+    # Reddit prints the username followed by optional MOD flag and flair on
+    # one line ("BatManatee MOD MIMG '13 and PhD '20"). Keep just the
+    # username — the first whitespace-separated token.
+    op_author_line = next_nonblank()
+    op_author = op_author_line.split()[0] if op_author_line else ""
     op_title = next_nonblank()
 
     # 2. Collect post body until the vote-pair line or "Join the conversation"
@@ -153,7 +176,15 @@ def parse_reddit(lines: List[str], title_fallback: str) -> Dict:
         nonlocal cur_author, cur_body
         if cur_author and cur_body:
             text = " ".join(cur_body).strip()
-            if len(text) >= 20:  # drop empty / one-word comments
+            # Filter Reddit's removed/deleted placeholders — these carry no
+            # content and would otherwise embed as noise.
+            lower = text.lower()
+            is_placeholder = (
+                lower.startswith("comment removed by")
+                or lower.startswith("comment deleted by")
+                or lower in ("[removed]", "[deleted]")
+            )
+            if len(text) >= 20 and not is_placeholder:
                 segments.append({
                     "segment_type": "comment",
                     "author": cur_author,
@@ -360,13 +391,38 @@ def _extract_article_paragraphs(path: Path) -> List[str]:
 
 def _flush_paragraph(buf: List[str], out: List[str]) -> None:
     para = re.sub(r"\s+", " ", " ".join(buf)).strip()
-    if len(para) >= 40:
-        out.append(para)
+    if len(para) < 40:
+        return
+    # Drop pure footer / copyright / site-chrome paragraphs.
+    if COPYRIGHT_RE.search(para) and len(para) < 200:
+        return
+    footer_hits = sum(1 for tok in SITE_FOOTER_TOKENS if tok in para)
+    if footer_hits >= 2 and len(para) < 300:
+        return
+    # Drop URL-truncated page-header titles (literal '...' or unicode '…' at end).
+    if (para.endswith("...") or para.endswith("…")) and len(para) < 200:
+        return
+    out.append(para)
+
+
+def _detect_article_title(paragraphs: List[str], fallback: str) -> str:
+    """Pick the first reasonable headline from the article's first few
+    paragraphs — skip truncated URL headers, copyright lines, and over-long
+    body paragraphs."""
+    for p in paragraphs[:8]:
+        if p.endswith("...") or p.endswith("…"):
+            continue
+        if COPYRIGHT_RE.search(p):
+            continue
+        if not (30 <= len(p) <= 200):
+            continue
+        return p
+    return paragraphs[0] if paragraphs else fallback
 
 
 def parse_article(path: Path, title_fallback: str) -> Dict:
     paragraphs = _extract_article_paragraphs(path)
-    title = paragraphs[0] if paragraphs else title_fallback
+    title = _detect_article_title(paragraphs, title_fallback)
     segments = [{"segment_type": "paragraph", "text": p} for p in paragraphs]
     return {"title": title, "segments": segments}
 
