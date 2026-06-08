@@ -77,7 +77,7 @@ if cost weren't a constraint, I'd consider BAAI/bge-base-en-v1.5 for higher retr
 | 2 | Which off-campus neighborhoods are listed as recommended places for UCLA students to live? | A named list of neighborhoods (e.g. Westwood, Palms, Mar Vista) drawn from the housing document |
 | 3 | What is the contact information for the UCLA off-campus housing office? | A specific phone number, address, or URL from the document — fail if hallucinated |
 | 4 | Do any documents mention student discounts on monthly parking permits? | Either the exact discount detail from the doc, OR "the documents do not mention this" — fail if the system guesses |
-| 5 | What is the average monthly rent for a 1-bedroom apartment near UCLA? | "The provided documents do not contain this information" — fail if the system invents a number |
+| 5 | What time do UCLA dining halls close at night on weekdays? | "The provided documents do not contain this information" — the BruinLife article describes meal plans and dining locations but does not list operating hours; fail if the system invents a closing time |
 ---
 
 ## Anticipated Challenges
@@ -100,8 +100,7 @@ if cost weren't a constraint, I'd consider BAAI/bge-base-en-v1.5 for higher retr
      You can use ASCII art, a Mermaid diagram, or embed a sketch as an image.
      You'll use this diagram as context when prompting AI tools to implement each stage. -->
 
----
-
+```
 ┌──────────────────────────────────────────────────────────────────────┐
 │                  THE UNOFFICIAL GUIDE — RAG PIPELINE                 │
 └──────────────────────────────────────────────────────────────────────┘
@@ -110,21 +109,21 @@ if cost weren't a constraint, I'd consider BAAI/bge-base-en-v1.5 for higher retr
        documents/*.pdf  ──►  preprocess.py  ──►  processed/corpus.jsonl
        (10 PDFs: Reddit threads, Daily Bruin, BruinLife, UCLA wiki)
        tool: pdfplumber + per-source cleaners (Reddit / article)
-       output: 276 clean text segments with metadata
+       output: 249 clean text segments with metadata
                                   │
                                   ▼
    [2] CHUNKING
        processed/corpus.jsonl  ──►  chunk.py  ──►  chunks/chunks.jsonl
        recursive splitter on ["\n\n", "\n", ". ", " "]
        600-char ceiling • 80-char overlap • segment boundaries hard
-       output: 364 chunks, each with [source — author] prefix
+       output: 334 chunks, each with [source — author] prefix
                                   │
                                   ▼
    [3] EMBEDDING + VECTOR STORE
        chunks/chunks.jsonl  ──►  embed.py  ──►  chroma/  (local DB)
        model: sentence-transformers/all-MiniLM-L6-v2  (384-dim)
        store: ChromaDB, cosine similarity
-       output: 364 vectors + metadata, persisted on disk
+       output: 334 vectors + metadata, persisted on disk
                                   │
                                   ▼
    [4] RETRIEVAL
@@ -140,6 +139,7 @@ if cost weren't a constraint, I'd consider BAAI/bge-base-en-v1.5 for higher retr
                                               │
                                               ▼
                                        answer + citations
+```
 
 
 ## AI Tool Plan
@@ -153,11 +153,13 @@ if cost weren't a constraint, I'd consider BAAI/bge-base-en-v1.5 for higher retr
      "I'll use AI to help me code" is not a plan.
      "I'll give Claude my Chunking Strategy section and ask it to implement chunk_text()
      with my specified chunk size and overlap" is a plan. -->
-I will give Claude my strategy for chunking and ask it to evaluate, the implement the strategy. 
-Preprocessing documents to .json format will be done with the help of Claude Code as well. I will review the fuctions used, and the logic behind every step.
+I will give Claude my strategy for chunking and ask it to evaluate, then implement the strategy. Preprocessing documents to .json format will be done with the help of Claude Code as well. I will review the functions used, and the logic behind every step.
 
 **Milestone 3 — Ingestion and chunking:**
+Gave Claude my Chunking Strategy section (600-char ceiling, 80-char overlap, segment boundaries hard) plus the list of source types in `documents/`. Asked it to produce `preprocess.py` (per-source PDF cleaner — Reddit thread vs. article) and `chunk.py` (recursive character splitter on `["\n\n", "\n", ". ", " "]`). Verified output with `validate_chunks.py`, which prints 5 random chunks and runs four diagnostics: empty/short chunks, HTML residue, length variation (coefficient of variation), and metadata completeness. Iterated until all checks passed and the random samples were substantive and self-contained.
 
 **Milestone 4 — Embedding and retrieval:**
+Gave Claude my Retrieval Approach section (`all-MiniLM-L6-v2`, top-k=5, cosine) and `chunks/chunks.jsonl`. Asked it to produce `embed.py` (sentence-transformers → ChromaDB with explicit `hnsw:space="cosine"` and `normalize_embeddings=True`) and `retrieve.py` (function + CLI, importing the embedding model name from `embed.py` so both scripts can't drift). Verified by running 5 probe queries spanning parking, housing, dining, and open-ended advice — confirmed top hits at 80%+ similarity for specific factual queries and correct source-thread retrieval for fuzzy ones.
 
 **Milestone 5 — Generation and interface:**
+Plan to give Claude the retrieved-chunks format from `retrieve.py` and ask it to produce `generate.py` that calls the Groq API with a grounded-answer system prompt enforcing "answer only from the provided context; cite sources by chunk_id; say 'the documents do not contain this' rather than guess." Will wrap it in a minimal Gradio interface. Verify by running the 5 Evaluation Plan questions end-to-end and checking that Q5 (no answer in corpus) correctly returns the abstention message rather than inventing closing hours.
