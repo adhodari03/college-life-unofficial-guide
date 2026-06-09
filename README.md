@@ -62,6 +62,58 @@ All ten sources were saved as PDFs in `documents/` and processed by `preprocess.
 
 ---
 
+## Sample Chunks
+
+<!-- Show at least 5 chunks that came out of your chunker, with the source document name
+     for each. The goal is to make it easy to eyeball whether the chunks are coherent and
+     self-contained. -->
+
+The five chunks below are representative samples drawn from `chunks/chunks.jsonl`. They span all four source types in the corpus (Reddit comment, news article, magazine article, r/ucla wiki) and illustrate the segment-boundary chunking strategy: short comments stay as a single chunk, long article paragraphs get split, and no chunk crosses an author boundary.
+
+### Chunk 1 — Reddit comment (parking advice)
+- **Source file:** `Parking_ _ r_ucla.pdf`
+- **Author / type:** u/itwontmendyourheart — Reddit comment
+- **Length:** 515 chars
+- **chunk_id:** `parking_r_ucla__seg001__c00`
+
+> For free parking, the UA neighborhood (Westwood Hills North encompassing frat row + UA apartments) is your best bet, however it will be a walk to main campus (the same walk lots of undergrads including myself have to take, so it is what it is). Someone posted a visual guide to the Westwood Hills North area I am referencing for free parking, including sweep days and time limits. You can also just buy daily passes in certain structures if you need them for a day
+
+### Chunk 2 — Daily Bruin article paragraph (factual rent figure)
+- **Source file:** `High demand, fast pace_ Inside the Westwood apartment hunting process - Daily Bruin.pdf`
+- **Type:** article paragraph
+- **Length:** 262 chars
+- **chunk_id:** `high_demand_..._daily_bruin__seg020__c00`
+
+> The average rental price for a one-bedroom apartment in Westwood is $3,223 per month, roughly 35% higher than the state average of $2,394 for an equivalent unit, according to RentCafe, an apartment search website.
+
+### Chunk 3 — BruinLife article paragraph (meal plan listing)
+- **Source file:** `Where to eat at UCLA_ Meal plans, dining halls and campus spots – BruinLife.pdf`
+- **Type:** article paragraph
+- **Length:** 597 chars
+- **chunk_id:** `where_to_eat_at_ucla_..._bruinlife__seg004__c00`
+
+> ▪ Regular Plans, or 19 Regular, 14 Regular or 11 Regular: These plans give you a fixed number of meals each week, and if you don't use a meal during the week, it doesn't roll over to the next week. Also, you can only use one meal swipe per meal period — so one breakfast, one lunch and one dinner per day. ▪ Premier Plans, or 19 Premier, 14 Premier or 11 Premier: These plans are more flexible. You get a set number of meals each week and any unused meals carry over from week to week within that quarter
+
+### Chunk 4 — r/ucla wiki page (structured permit rates)
+- **Source file:** `r_ucla Parking Guide_ Permits, Rates & Daily Passes.pdf`
+- **Type:** article paragraph (wiki section)
+- **Length:** 343 chars
+- **chunk_id:** `r_ucla_parking_guide_permits_rates_daily_passes__seg001__c00`
+
+> Permit Rates • Commuter Student Permit - $258/Quarter • Residence Hall Student Permit - $324/Quarter • Night and Weekend Permit - $150/Quarter • Two-Person Carpool Permit - $216 Total Fee/Quarter • Three-Person Carpool Permit - $132 Total Fee/Quarter
+
+### Chunk 5 — Reddit comment (very short, link recommendation)
+- **Source file:** `off campus apartments _ r_ucla.pdf`
+- **Author / type:** u/Born-Standard-9195 — Reddit comment
+- **Length:** 92 chars
+- **chunk_id:** `off_campus_apartments_r_ucla__seg005__c00`
+
+> Try UclaOffCampusHousing.com!
+
+This last chunk demonstrates the segment-boundary rule directly: it's well under the 600-character ceiling, but the chunker did **not** merge it with the next comment in the thread — that would have created a chunk containing two unrelated authors' thoughts. The 92-char chunk stays on its own.
+
+---
+
 ## Embedding Model
 
 <!-- Name the embedding model you used and explain your choice.
@@ -73,6 +125,46 @@ All ten sources were saved as PDFs in `documents/` and processed by `preprocess.
 **Model used:** `sentence-transformers/all-MiniLM-L6-v2`, 384-dimensional vectors, ~22M parameters. I chose it because the corpus is general-domain English without specialized vocabulary that would justify a domain-tuned model, and because the project's local-first design rules out API-hosted embedding services. Encoding all 334 chunks finished in under 3 seconds on CPU. Embeddings are normalized (`normalize_embeddings=True`) and stored in ChromaDB with cosine distance set explicitly via `hnsw:space="cosine"` — Chroma's L2 default is the wrong metric once vectors are normalized. The same model and same normalization are used to embed user queries, enforced by importing `EMBEDDING_MODEL` from a single constant in `embed.py`.
 
 **Production tradeoff reflection:** if cost and latency weren't constraints, the most defensible upgrade would be `BAAI/bge-base-en-v1.5` — same architecture family, ~3x larger, measurably better on standard retrieval benchmarks (BEIR, MTEB), but ~5x slower on CPU and benefits from a GPU. The next tier up would be OpenAI's `text-embedding-3-large`: higher quality still and longer context, at the cost of a paid API dependency and per-query network latency. Two other axes I would consider for production: (1) **context length** — MiniLM truncates input at 256 tokens, which is fine for my 600-character ceiling but would push me toward `mpnet-base` (514 tokens) or BGE (512) for a corpus with longer atomic units; (2) **domain adaptation** — if I were deploying this against a more specialized corpus (e.g., medical school student reviews with heavy medical vocabulary), I would consider fine-tuning MiniLM on labeled query-doc pairs from the domain, which typically beats a generic larger model on the same compute budget.
+
+---
+
+## Retrieval Test Results
+
+<!-- Show at least 3 queries with the top chunks returned, plus written explanations of
+     relevance for at least 2. The goal is to demonstrate that retrieval is surfacing the
+     right context, independent of how the LLM later uses it. -->
+
+Three sample queries run directly through `retrieve.py` (i.e., the retrieval stage only — no LLM generation involved). Each query returned 5 chunks; the top 3 per query are shown below with cosine similarity scores. These queries are intentionally distinct from the 5 evaluation questions so the evaluation report below tests an independent set of behaviors.
+
+### Query A: "Where can I park near UCLA if I didn't get a parking permit?"
+
+| Rank | Sim. | Source file | Chunk excerpt |
+|---|---|---|---|
+| 1 | 76.2% | `Parking_ _ r_ucla.pdf` (u/Automatic_Aioli8500, OP) | *"Parking? I wasn't awarded a parking pass this quarter. I am a single mother who commutes from the valley. Does anyone have any suggestions on where I can park?"* |
+| 2 | 76.1% | `Please walk me through parking permits _ r_ucla.pdf` (u/Local-Tear9723) | *"omg the parking situation at ucla is so confusing so i totally get it. basically you have to apply for a permit for the quarter through the bruin epermit portal online..."* |
+| 3 | 74.6% | `Please walk me through parking permits _ r_ucla.pdf` (u/Specialist_Cloud7507, OP) | *"Please walk me through parking permits. Hello, I am a commuter, I need to park my car to go to class, Im completely lost as to what im supposed to do..."* |
+
+**Why these are relevant:** the query paraphrases the situation that drives the parking-permit conversation in the corpus — a commuter who didn't receive a permit asking for alternatives. Rank 1 is the OP of the parking thread asking essentially the same question; ranks 2 and 3 are detailed walkthrough comments from the parking-permit explainer thread. The embedding correctly groups "didn't get a permit" + "park near UCLA" + commuter scenario, and there are no off-topic chunks in the top 5 — every result is from one of the two parking-focused threads.
+
+### Query B: "How much does an apartment in Westwood cost per month?"
+
+| Rank | Sim. | Source file | Chunk excerpt |
+|---|---|---|---|
+| 1 | 80.4% | `High demand, fast pace_ ... Daily Bruin.pdf` (paragraph) | *"The average rental price for a one-bedroom apartment in Westwood is $3,223 per month, roughly 35% higher than the state average of $2,394 for an equivalent unit, according to RentCafe..."* |
+| 2 | 69.3% | `High demand, fast pace_ ... Daily Bruin.pdf` (paragraph) | *"Location and building conditions also shape rental costs, Sirikci said. Units closer to campus or in newly renovated buildings generally command higher prices..."* |
+| 3 | 68.9% | `High demand, fast pace_ ... Daily Bruin.pdf` (paragraph) | *"For example, a tenant paying $1,000 per month who renews may see a roughly 2% increase, while a new renter in the same unit could pay $1,200 or more..."* |
+
+**Why these are relevant:** rank 1 is the canonical factual answer — a single sentence containing the specific monthly figure ($3,223) for the exact unit type the query asked about. The 80.4% similarity is the highest of any retrieval result in my test set, which reflects how well the embedding matched the query's specific intent ("apartment" + "Westwood" + "cost" + "per month") to that one sentence. Ranks 2 and 3 are surrounding paragraphs from the same article that contextualize the figure (factors that affect rent, renewal vs. new-tenant pricing). This is what retrieval looks like when there's a clean factual answer in the corpus.
+
+### Query C: "What are the meal plan options at UCLA?"
+
+| Rank | Sim. | Source file | Chunk excerpt |
+|---|---|---|---|
+| 1 | 81.2% | `Where to eat at UCLA_ ... BruinLife.pdf` (paragraph) | *"▪ Regular Plans, or 19 Regular, 14 Regular or 11 Regular: These plans give you a fixed number of meals each week, and if you don't use a meal during the week, it doesn't roll over to the next week..."* |
+| 2 | 79.2% | `Where to eat at UCLA_ ... BruinLife.pdf` (paragraph) | *"Here's a quick rundown of the meal plans for on-campus residents:"* |
+| 3 | 74.6% | `Where to eat at UCLA_ ... BruinLife.pdf` (paragraph) | *"If you live on campus, you'll select a meal plan that fits your eating habits. UCLA offers several meal plan options providing a certain number of meal swipes per week or quarter..."* |
+
+**Why these are relevant:** all five chunks for this query come from the BruinLife dining article, and the top 3 are the exact sequence of paragraphs in the article that describe the meal plans (lead-in, list intro, and the bulleted list of named plans). The segment-boundary chunking is working as designed — each article paragraph is its own chunk, so the bulleted-list paragraph and its introductory paragraph rank independently rather than being glued together with adjacent content.
 
 ---
 
@@ -96,6 +188,104 @@ All ten sources were saved as PDFs in `documents/` and processed by `preprocess.
 The first sentence frames the scope; the second sentence is the hard grounding rule plus the exact abstention phrase; the third sentence handles citation and explicitly forbids invention. I also set `temperature=0.1` to suppress creative completion. The user prompt then contains the 5 retrieved chunks in `[N] (Source: filename.pdf — segment_type, u/author)` format followed by the question.
 
 **How source attribution is surfaced in the response:** the generation pipeline always returns a structured `dict` containing both `answer` (the LLM text, with inline `[1]`, `[2]` markers) and `sources` (a list where each entry has `ref`, `filename`, `source_id`, `source_type`, `segment_type`, `author`, `title`, `raw_text`, `chunk_id`, `similarity`, and `distance`). The `filename` field is the *real* PDF filename, looked up at runtime from `processed/*.json` rather than the slugified ID. Both the CLI (`generate.py`) and the Gradio UI (`app.py`) render the source list alongside the answer so a user can verify every `[N]` claim against its actual chunk text. The filename mapping is also why "Reddit thread" chunks display the author (`u/itwontmendyourheart`) while article chunks display only the source type — the metadata is rich enough that each surface (CLI, UI, future eval script) can render attribution however it wants without losing information.
+
+---
+
+## Query Interface
+
+<!-- Describe the input and output fields of your query interface, and include a sample
+     interaction transcript showing one complete query + response. -->
+
+The query interface is a Gradio web app served by `app.py` and rendered at `http://127.0.0.1:7860/`. It wraps the `answer()` function from `generate.py` directly, so the UI is a thin layer over the underlying RAG pipeline — anything the CLI can do, the UI can do.
+
+**Input fields:**
+
+- **"Your question"** — a multi-line text box where the user types a natural-language question. Pressing Enter inside the box submits, equivalent to clicking the button.
+- **"Top-k chunks"** — a slider from 1 to 10 (default 5) that controls how many retrieved chunks are passed to the LLM as context. Higher k = more evidence + more noise; lower k = sharper but fragile. The default matches the planning-document choice.
+- **"Ask"** button — submits the question.
+
+Below the input is a panel of **5 one-click example questions** — the exact 5 evaluation questions from `planning.md`, so a user or grader can reproduce the evaluation runs without typing.
+
+**Output fields:**
+
+- **Answer** (left panel) — the LLM's response rendered as Markdown, so inline `[N]` citation markers appear as plain text and any emphasis or lists render correctly. A footer line shows which Groq model produced the answer and what top-k was used.
+- **Sources retrieved** (right panel) — one block per retrieved chunk, showing: the source PDF filename in monospace, attribution (segment type + Reddit author if applicable), the cosine similarity percentage, the chunk's unique ID, and a 320-character snippet of the chunk body. This is the "show your work" panel — every `[N]` claim in the answer can be cross-checked against its actual source chunk here.
+
+### Sample interaction transcript
+
+> **User question:** *"What is the daily parking rate at the closest public lot to UCLA's main campus?"*
+>
+> **Answer panel** (model: `llama-3.3-70b-versatile` · top-k: 5):
+>
+> The daily parking rate at certain structures near UCLA's main campus can be purchased for a day [2]. However, the exact daily rate is not consistently stated across the documents. One comment mentions a $7 all-day parking option, but the location and availability of this rate are unclear [4]. Another comment mentions a $17 whole-day rate [4]. Therefore, I don't have enough information to provide a definitive daily parking rate at the closest public lot to UCLA's main campus.
+>
+> **Sources retrieved panel:**
+>
+> - **[1]** `Parking_ _ r_ucla.pdf` — comment by u/RevolutionarySea15 — similarity 68.6%
+> - **[2]** `Parking_ _ r_ucla.pdf` — comment by u/itwontmendyourheart — similarity 67.5%
+> - **[3]** `Parking_ _ r_ucla.pdf` — comment by u/itwontmendyourheart — similarity 66.1%
+> - **[4]** `Please walk me through parking permits _ r_ucla.pdf` — comment by u/glizzyglobber6699 — similarity 66.0%
+> - **[5]** `Please walk me through parking permits _ r_ucla.pdf` — comment by u/Local-Tear9723 — similarity 64.1%
+
+The user can verify each `[N]` claim against its corresponding source block. For example, the `$7` and `$17` figures both come from `[4]`, which is u/glizzyglobber6699's comment literally asking *"is the 7$ all day parking or is it just 1-3 hours. also which parking lot is 7$? I can only find 17$ whole day"*. The model surfaced those numbers because they appear in retrieved chunks; the hedging at the end ("I don't have enough information to provide a definitive…") is the grounded-generation system prompt kicking in because the chunks don't agree on a single rate.
+
+---
+
+## Example Responses
+
+<!-- Show at least 2 responses with visible source attribution, plus one out-of-scope query
+     and the system's refusal response. -->
+
+The three transcripts below are unedited outputs from `python generate.py "<question>"` run against the persisted ChromaDB collection. They demonstrate (a) how source attribution is surfaced inline as `[N]` markers tied to the retrieved sources list, and (b) how the system refuses to answer when the corpus does not contain the requested information.
+
+### Example 1 — Response with citations to multiple sources
+
+**Question:** *"What is the daily parking rate at the closest public lot to UCLA's main campus?"*
+
+**Answer:**
+
+> The daily parking rate at certain structures near UCLA's main campus can be purchased for a day **[2]**. However, the exact daily rate is not consistently stated across the documents. One comment mentions a $7 all-day parking option, but the location and availability of this rate are unclear **[4]**. Another comment mentions a $17 whole-day rate **[4]**. Therefore, I don't have enough information to provide a definitive daily parking rate at the closest public lot to UCLA's main campus.
+
+**Sources:**
+- **[1]** `Parking_ _ r_ucla.pdf` (comment by u/RevolutionarySea15) — similarity 68.6%
+- **[2]** `Parking_ _ r_ucla.pdf` (comment by u/itwontmendyourheart) — similarity 67.5%
+- **[3]** `Parking_ _ r_ucla.pdf` (comment by u/itwontmendyourheart) — similarity 66.1%
+- **[4]** `Please walk me through parking permits _ r_ucla.pdf` (comment by u/glizzyglobber6699) — similarity 66.0%
+- **[5]** `Please walk me through parking permits _ r_ucla.pdf` (comment by u/Local-Tear9723) — similarity 64.1%
+
+### Example 2 — Response with selective citation (distinguishes what's in the chunks from what isn't)
+
+**Question:** *"Do any documents mention student discounts on monthly parking permits?"*
+
+**Answer:**
+
+> I don't have enough information on that. None of the documents **[1]**, **[2]**, **[3]**, **[4]**, or **[5]** mention student discounts on monthly parking permits. They do discuss quarterly costs **[1]**, daily passes **[1] [2]**, and permit prices **[2]**, but not monthly parking permits or potential student discounts.
+
+**Sources:**
+- **[1]** `Please walk me through parking permits _ r_ucla.pdf` (comment by u/anishinaabish) — similarity 64.4%
+- **[2]** `r_ucla Parking Guide_ Permits, Rates & Daily Passes.pdf` (paragraph) — similarity 60.4%
+- **[3]** `r_ucla Parking Guide_ Permits, Rates & Daily Passes.pdf` (paragraph) — similarity 59.7%
+- **[4]** `Parking_ _ r_ucla.pdf` (comment by u/purpleamethyst139) — similarity 58.6%
+- **[5]** `Please walk me through parking permits _ r_ucla.pdf` (comment by u/anishinaabish) — similarity 58.0%
+
+This response illustrates that the abstention is **selective**. The model uses citations to distinguish what the documents *do* discuss (quarterly costs, daily passes, permit prices) from what they *don't* (monthly permits, student discounts). It is using the documents but accurately reporting their boundaries.
+
+### Example 3 — Out-of-scope query, system refusal
+
+**Question:** *"What time do UCLA dining halls close at night on weekdays?"*
+
+**Answer:**
+
+> I don't have enough information on that **[1][2][3][4][5]**. None of the provided documents mention the closing time of UCLA dining halls on weekdays.
+
+**Sources:**
+- **[1]** `Where to eat at UCLA_ Meal plans, dining halls and campus spots – BruinLife.pdf` (paragraph) — similarity 64.1%
+- **[2]** `Where to eat at UCLA_ Meal plans, dining halls and campus spots – BruinLife.pdf` (paragraph) — similarity 59.2%
+- **[3]** `Where to eat at UCLA_ Meal plans, dining halls and campus spots – BruinLife.pdf` (paragraph) — similarity 58.1%
+- **[4]** `Where to eat at UCLA_ Meal plans, dining halls and campus spots – BruinLife.pdf` (paragraph) — similarity 57.6%
+- **[5]** `Where to eat at UCLA_ Meal plans, dining halls and campus spots – BruinLife.pdf` (paragraph) — similarity 57.2%
+
+Retrieval correctly surfaced 5 dining-related chunks (all from the BruinLife article), which is the right topical source for a dining-hours question — but the chunks themselves don't contain operating hours, so the grounded-generation system prompt forces the abstention phrase verbatim rather than letting the model invent hours.
 
 ---
 
